@@ -1,8 +1,11 @@
 using NUnit.Framework;
 using DM.Net.Core;
+using System.IO;
+using System;
+using System.Collections.Generic;
 
 namespace DM.Net.Test {
-    public class Tests {
+    public class TargetResourceTests {
         [SetUp]
         public void Setup()
         {
@@ -29,6 +32,37 @@ namespace DM.Net.Test {
             TargetResource tg1 = new TargetResource { Path = @"L:\TEST\go.gif" };
             TargetResource tg2 = new TargetResource { Path = @"L:\TEST\1.jpg" };
             Assert.IsTrue( tg1.GetFullMD5() != tg2.GetFullMD5() );
+        }
+    }
+
+    public class DiskTests {
+        [SetUp]
+        public void Setup()
+        {
+            Logger.Init();
+        }
+
+        [Test]
+        public void Test_IndiceDisks()
+        {
+            var dbDir = Path.Combine( Directory.GetCurrentDirectory(), "db" );
+            if ( !Directory.Exists(dbDir) ) {
+                Directory.CreateDirectory( dbDir );
+            }
+            var ms = new TargetResouceManagers( dbDir );
+            var ds = ms.IndiceDisks();
+        }
+
+
+        [Test]
+        public void Test_IndiceFiles()
+        {
+            var dbDir = Path.Combine( Directory.GetCurrentDirectory(), "db" );
+            if ( !Directory.Exists( dbDir ) ) {
+                Directory.CreateDirectory( dbDir );
+            }
+            var ms = new TargetResouceManagers( dbDir );
+            ms.IndiceAllFileRecursion( "1ccb4746-9b95-476d-8660-0ca9990db594", @"M:\" );
         }
     }
 }

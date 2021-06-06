@@ -1,4 +1,11 @@
-﻿using System;
+﻿using log4net;
+using log4net.Core;
+
+using SQLite;
+
+using SQLiteNetExtensions.Attributes;
+
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -20,16 +27,170 @@ namespace DM.Net.Core {
             }
             return sOutput.ToString();
         }
+        public static string GUID()
+        {
+            Guid g = Guid.NewGuid();
+            return g.ToString();
+        }
+    }
+    public class TargetResouceManagers {
+        private ILog log = LogManager.GetLogger( "TargetResouceManagers" );
+        private SQLiteConnection mMetaDB;
+        private readonly string dbPath;
+        public List<TargetResouceManager> Handles { get; set; } = new List<TargetResouceManager>();
+        public TargetResouceManagers( string dbPath )
+        {
+            this.dbPath = dbPath;
+            mMetaDB = new SQLiteConnection( Path.Combine( dbPath, "___meta___.db" ) );
+            mMetaDB.CreateTable<Disk>();
+            mMetaDB.CreateTable<Tag>();
+
+            DirectoryInfo folder = new DirectoryInfo( dbPath );
+            foreach ( FileInfo file in folder.GetFiles( "*.db" ) ) {
+                if ( file.Name == "___meta___.db" ) {
+                    continue;
+                }
+                Handles.Add( new TargetResouceManager( file.FullName, file.Name ) );
+            }
+        }
+        public List<Disk> GetAllDisks() => mMetaDB.Table<Disk>().ToList();
+        public List<Tag> GetAllTags() => mMetaDB.Table<Tag>().ToList();
+        /// <summary>
+        /// 通过是否存在.dm目录判断磁盘是否被索引
+        /// </summary>
+        /// <param name="info"></param>
+        /// <returns></returns>
+        public bool IsDiskIndiced( DriveInfo info )
+        {
+            foreach ( var d in info.RootDirectory.GetDirectories() ) {
+                if ( d.Name == ".dm" ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        /// <summary>
+        /// 判断磁盘是否已被索引入数据库
+        /// </summary>
+        /// <param name="info"></param>
+        /// <returns></returns>
+        public bool IsDiskInDB( DriveInfo i )
+        {
+            if ( !IsDiskIndiced(i) ) {
+                return false;
+            }
+            var metaPath = Path.Combine( i.RootDirectory.FullName, ".dm" );
+            var metaDir = new DirectoryInfo( metaPath );
+            foreach ( var f in metaDir.GetFiles() ) {
+                var query = mMetaDB.Table<Disk>().Where( e => e.GUID == f.Name );
+                if ( query.Count() != 0 ) return true;
+            }
+            return false;
+        }
+        public void IndiceDisk( DriveInfo i )
+        {
+            try {
+                if ( i.DriveType == DriveType.CDRom || i.DriveType == DriveType.Network || i.DriveType == DriveType.Ram ) {
+                    log.Warn($"VolumeLabel: {i.VolumeLabel}\n DriveType: {i.DriveType}.\n, which has not been supported in dm yet.");
+                    return;
+                }
+
+                var metaPath = Path.Combine( i.RootDirectory.FullName, ".dm" );
+                var guid = ByteHelper.GUID();
+                Directory.CreateDirectory( metaPath );
+                File.Create( Path.Combine( metaPath, guid ) );
+
+                mMetaDB.Insert( new Disk {
+                    Letter = i.VolumeLabel,
+                    GUID = guid,
+                    RestSize = i.AvailableFreeSpace,
+                    TotalSize = i.TotalSize,
+                    Name = i.Name,
+                    Type = i.DriveType.ToString(),
+                    DriveFormat = i.DriveFormat,
+                } );
+            } catch ( Exception ex ) {
+                throw new DMException( $"In IndiceDisk(): { i.DriveType.ToString() } \n {ex.Message} \n {ex.StackTrace}" );
+            }
+        }
+        public List<Disk> IndiceDisks()
+        {
+            var infos = DriveInfo.GetDrives();
+            foreach ( var i in infos ) {
+                if ( i.IsReady ) {
+                    if ( !IsDiskInDB( i ) ) {
+                        IndiceDisk( i );
+                    }
+                }
+            }
+            return mMetaDB.Table<Disk>().ToList();
+        }
+
+        public void IndiceAllFileRecursion( string guid, string root )
+        {
+            SQLiteConnection db = new SQLiteConnection( Path.Combine( dbPath, guid + ".db" ) );
+            db.CreateTable<TargetResource>();
+            long count = -1;
+            try {
+                string[] files = Directory.GetFiles( root, "*.*", SearchOption.AllDirectories );
+                count = files.Length;
+
+                foreach ( string f in files ) {
+                    var fi = new FileInfo( f );
+                    db.Insert( new TargetResource {
+                        BackupList = new List<TargetResource>(),
+                        Path = fi.FullName,
+                        Rating = 0,
+                        Size = fi.Length,
+                        Uni = "",
+                        Tags = new List<Tag>(),
+                        Description = ""
+                    } );
+                    count--;
+                }
+            } catch ( Exception ex ) {
+                throw new DMException( $"In IndiceAllFileRecursion(): \n {ex.Message} \n {ex.StackTrace} \n rest count = { count }"  );
+            }
+        }
     }
     public class TargetResouceManager {
-
+        private SQLiteConnection mDB;
+        public readonly string Name;
+        public TargetResouceManager( string dbPath, string name )
+        {
+            Name = name;
+            mDB = new SQLiteConnection( dbPath );
+            mDB.CreateTable<TargetResource>();
+        }
+    }
+    public class Disk {
+        [PrimaryKey, AutoIncrement]
+        public Int64 Id { get; set; }
+        public string Name { get; set; }
+        public string GUID { get; set; }
+        public string Letter { get; set; }
+        public string Type { get; set; }
+        public long TotalSize { get; set; }
+        public long RestSize { get; set; }
+        public string DriveFormat { get; set; }
+    }
+    public class Task {
+        [PrimaryKey, AutoIncrement]
+        public Int64 Id { get; set; }
+        public string Description { get; set; }
+        public Disk OperateDisk { get; set; }
+        public DateTime Date { get; set; }
+        public string GUID { get; set; }
     }
     public class TargetResource {
+        [PrimaryKey, AutoIncrement]
         public Int64 Id { get; set; }
         public string Description { get; set; }
         public string Uni { get; set; }
         public string Path { get; set; }
+        [OneToMany( CascadeOperations = CascadeOperation.All )]
         public List<TargetResource> BackupList { get; set; }
+        [OneToMany( CascadeOperations = CascadeOperation.All )]
         public List<Tag> Tags { get; set; }
         public int Rating { get; set; }
         public Int64 Size { get; set; }
@@ -46,7 +207,7 @@ namespace DM.Net.Core {
                     return retVal;
                 }
             } catch ( Exception ex ) {
-                throw new Exception( $"In GetMD5():\n {this} \n {ex.Message} \n {ex.StackTrace}" );
+                throw new DMException( $"In GetMD5():\n {this} \n {ex.Message} \n {ex.StackTrace}" );
             }
         }
         public bool IsSameFile( TargetResource r, int blockSize = 512 )
@@ -78,7 +239,7 @@ namespace DM.Net.Core {
                 }
                 return true;
             } catch ( Exception ex ) {
-                throw new Exception( $"In IsSameFile():\n {this} \n {ex.Message} \n {ex.StackTrace}" );
+                throw new DMException( $"In IsSameFile():\n {this} \n {ex.Message} \n {ex.StackTrace}" );
             } finally {
                 if ( f1 != null ) {
                     f1.Close();
