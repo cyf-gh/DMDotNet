@@ -49,8 +49,9 @@ namespace DM.Net.Test {
             if ( !Directory.Exists(dbDir) ) {
                 Directory.CreateDirectory( dbDir );
             }
-            var ms = new TargetResouceManagers( dbDir );
-            var ds = ms.IndiceDisks();
+            var s = new List<TargetResouceManagers.DiskInfo>();
+            var ms = new TargetResouceManagers( dbDir, ref s );
+            var ds = ms.IndiceDisksOnThisPC();
         }
 
 
@@ -61,8 +62,15 @@ namespace DM.Net.Test {
             if ( !Directory.Exists( dbDir ) ) {
                 Directory.CreateDirectory( dbDir );
             }
-            var ms = new TargetResouceManagers( dbDir );
-            ms.IndiceAllFileRecursion( "1ccb4746-9b95-476d-8660-0ca9990db594", @"M:\" );
+            var s = new List<TargetResouceManagers.DiskInfo>();
+            var ms = new TargetResouceManagers( dbDir, ref s );
+            var diskM = ms.Handles.Find( m => { return m.mMeta.GUID == "1ccb4746-9b95-476d-8660-0ca9990db594"; } );
+            // ms.IndiceAllFileRecursionInDisk( "1ccb4746-9b95-476d-8660-0ca9990db594", @"M:\" );
+        }
+        [Test]
+        public void Test_GetDisksStatus()
+        {
+
         }
     }
 }

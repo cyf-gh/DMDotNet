@@ -34,11 +34,19 @@ namespace DM.Net.Core {
         }
     }
     public class TargetResouceManagers {
+        public class DiskInfo {
+            public string GUID { get; set; }
+        }
         private ILog log = LogManager.GetLogger( "TargetResouceManagers" );
         private SQLiteConnection mMetaDB;
         private readonly string dbPath;
         public List<TargetResouceManager> Handles { get; set; } = new List<TargetResouceManager>();
-        public TargetResouceManagers( string dbPath )
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="dbPath"></param>
+        /// <param name="fileDBNotInMetaDBs">存在db数据库，但meta中未索引该数据库，应当提示用户添加至meta</param>
+        public TargetResouceManagers( string dbPath, ref List<DiskInfo> fileDBNotInMetaDBs )
         {
             this.dbPath = dbPath;
             mMetaDB = new SQLiteConnection( Path.Combine( dbPath, "___meta___.db" ) );
@@ -49,8 +57,40 @@ namespace DM.Net.Core {
             foreach ( FileInfo file in folder.GetFiles( "*.db" ) ) {
                 if ( file.Name == "___meta___.db" ) {
                     continue;
+                 }
+                var GUID = Path.GetFileNameWithoutExtension( file.Name );
+                var d = mMetaDB.Table<Disk>().ToList().Find( d => d.GUID == GUID );
+                if ( d == null ) {
+                    // 存在db数据库，但meta中未索引该数据库，应当提示用户添加至meta
+                    fileDBNotInMetaDBs.Add( new DiskInfo { GUID = GUID } );
+                    continue;
                 }
-                Handles.Add( new TargetResouceManager( file.FullName, file.Name ) );
+                Handles.Add( new TargetResouceManager( file.FullName, d ) );
+            }
+        }
+        /// <summary>
+        /// 获取所有磁盘的情况
+        /// </summary>
+        /// <param name="onlineDisks">已在meta中索引，且目处于激活状态的硬盘</param>
+        /// <param name="offlineDisks">已在meta中索引，但目前不可使用的硬盘</param>
+        /// <param name="notIndicatedDisks">未被索引，但处于激活状态的硬盘</param>
+        public void GetDisksStatus( ref List<DiskInfo> onlineDisks, ref List<DiskInfo> offlineDisks, ref List<DriveInfo> notIndicatedDisks )
+        {
+            var infos = DriveInfo.GetDrives();
+            var allDisks = mMetaDB.Table<Disk>().ToList();
+            var GUID = string.Empty;
+            foreach ( var i in infos ) {
+                if ( i.IsReady ) {
+                    if ( !IsDiskInDB( i, ref GUID ) ) {
+                        notIndicatedDisks.Add(i);
+                    } else {
+                        onlineDisks.Add( new DiskInfo { GUID = GUID } );
+                        allDisks.Remove( allDisks.Find( d => d.GUID == GUID ) );
+                    }
+                }
+            }
+            foreach ( var d in allDisks ) {
+                offlineDisks.Add( new DiskInfo { GUID = d.GUID } );
             }
         }
         public List<Disk> GetAllDisks() => mMetaDB.Table<Disk>().ToList();
@@ -74,7 +114,7 @@ namespace DM.Net.Core {
         /// </summary>
         /// <param name="info"></param>
         /// <returns></returns>
-        public bool IsDiskInDB( DriveInfo i )
+        public bool IsDiskInDB( DriveInfo i, ref string GUID )
         {
             if ( !IsDiskIndiced(i) ) {
                 return false;
@@ -82,11 +122,19 @@ namespace DM.Net.Core {
             var metaPath = Path.Combine( i.RootDirectory.FullName, ".dm" );
             var metaDir = new DirectoryInfo( metaPath );
             foreach ( var f in metaDir.GetFiles() ) {
-                var query = mMetaDB.Table<Disk>().Where( e => e.GUID == f.Name );
-                if ( query.Count() != 0 ) return true;
+                var query = mMetaDB.Table<Disk>().ToList().Find( e => e.GUID == Path.GetFileNameWithoutExtension( f.Name ) );
+                if ( query != null ) { 
+                    GUID = query.GUID;
+                    return true;
+                }
             }
             return false;
         }
+        /// <summary>
+        /// 索引磁盘
+        /// </summary>
+        /// <see cref="IndiceDisksOnThisPC()"/>
+        /// <param name="i"></param>
         public void IndiceDisk( DriveInfo i )
         {
             try {
@@ -105,28 +153,38 @@ namespace DM.Net.Core {
                     GUID = guid,
                     RestSize = i.AvailableFreeSpace,
                     TotalSize = i.TotalSize,
-                    Name = i.Name,
                     Type = i.DriveType.ToString(),
                     DriveFormat = i.DriveFormat,
+                    LastUpdateDate = DateTime.Now,
                 } );
             } catch ( Exception ex ) {
                 throw new DMException( $"In IndiceDisk(): { i.DriveType.ToString() } \n {ex.Message} \n {ex.StackTrace}" );
             }
         }
-        public List<Disk> IndiceDisks()
+        /// <summary>
+        /// 索引当前PC上的所有磁盘
+        /// </summary>
+        /// <returns></returns>
+        public List<Disk> IndiceDisksOnThisPC()
         {
+            var GUID = "";
             var infos = DriveInfo.GetDrives();
             foreach ( var i in infos ) {
+                 // 挂载磁盘类型于IndiceDisk内解决
                 if ( i.IsReady ) {
-                    if ( !IsDiskInDB( i ) ) {
+                    if ( !IsDiskInDB( i, ref GUID ) ) {
                         IndiceDisk( i );
                     }
                 }
             }
             return mMetaDB.Table<Disk>().ToList();
         }
-
-        public void IndiceAllFileRecursion( string guid, string root )
+        /// <summary>
+        /// 所有文件递归索引
+        /// </summary>
+        /// <param name="guid">该磁盘的GUID</param>
+        /// <param name="root">形如C:\的路径</param>
+        public void IndiceAllFileRecursionInDisk( string guid, string root )
         {
             SQLiteConnection db = new SQLiteConnection( Path.Combine( dbPath, guid + ".db" ) );
             db.CreateTable<TargetResource>();
@@ -134,7 +192,7 @@ namespace DM.Net.Core {
             try {
                 string[] files = Directory.GetFiles( root, "*.*", SearchOption.AllDirectories );
                 count = files.Length;
-
+                
                 foreach ( string f in files ) {
                     var fi = new FileInfo( f );
                     db.Insert( new TargetResource {
@@ -153,26 +211,62 @@ namespace DM.Net.Core {
             }
         }
     }
+    public class AsyncPackage {
+        public long Total { get; set; }
+        public long Current { get; set; }
+
+    }
+    /// <summary>
+    /// TargetResouce映射于每个磁盘
+    /// </summary>
+    /// <seealso cref="TargetResouceManagers"/>
     public class TargetResouceManager {
         private SQLiteConnection mDB;
-        public readonly string Name;
-        public TargetResouceManager( string dbPath, string name )
+        public readonly Disk mMeta;
+
+        public TargetResouceManager( string dbPath, Disk meta )
         {
-            Name = name;
+            mMeta = meta;
             mDB = new SQLiteConnection( dbPath );
             mDB.CreateTable<TargetResource>();
+        }
+
+        public bool IndicateAllFilesRecursion( string root )
+        {
+            long count = -1;
+            try {
+                string[] files = Directory.GetFiles( root, "*.*", SearchOption.AllDirectories );
+                count = files.Length;
+
+                foreach ( string f in files ) {
+                    var fi = new FileInfo( f );
+                    mDB.Insert( new TargetResource {
+                        BackupList = new List<TargetResource>(),
+                        Path = fi.FullName,
+                        Rating = 0,
+                        Size = fi.Length,
+                        Uni = "",
+                        Tags = new List<Tag>(),
+                        Description = ""
+                    } );
+                    count--;
+                }
+            } catch ( Exception ex ) {
+                throw new DMException( $"In {mMeta.GUID} IndicateAllFilesRecursion(): \n {ex.Message} \n {ex.StackTrace} \n rest count = { count }" );
+            }
+            return true;
         }
     }
     public class Disk {
         [PrimaryKey, AutoIncrement]
         public Int64 Id { get; set; }
-        public string Name { get; set; }
         public string GUID { get; set; }
         public string Letter { get; set; }
         public string Type { get; set; }
         public long TotalSize { get; set; }
         public long RestSize { get; set; }
         public string DriveFormat { get; set; }
+        public DateTime LastUpdateDate { get; set; }
     }
     public class Task {
         [PrimaryKey, AutoIncrement]
